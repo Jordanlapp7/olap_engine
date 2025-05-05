@@ -37,3 +37,17 @@ impl Table {
     Ok(Table { columns })
   }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_csv() {
+        let table = Table::load_csv("data/sample.csv").expect("CSV failed to load");
+
+        assert!(table.columns.contains_key("region"));
+        assert_eq!(table.columns["region"].data[0], "East");
+        assert_eq!(table.columns["sales"].data[1], "200");
+    }
+}
