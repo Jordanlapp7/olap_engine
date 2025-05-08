@@ -89,3 +89,56 @@ impl<'a> Executable for FilterNode<'a> {
         results
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::table::{Table, Column};
+
+    fn sample_table() -> Table {
+        Table {
+            columns: HashMap::from([
+                ("region".to_string(), Column { data: vec!["East".to_string(), "West".to_string(), "East".to_string()] }),
+                ("sales".to_string(), Column { data: vec!["100".to_string(), "200".to_string(), "300".to_string()] }),
+            ]),
+        }
+    }
+
+    #[test]
+    fn test_scan_node() {
+        let table = sample_table();
+        let scan = ScanNode { table: &table };
+        let output = scan.execute();
+
+        assert_eq!(output["region"], vec!["East", "West", "East"]);
+        assert_eq!(output["sales"], vec!["100", "200", "300"]);
+    }
+
+    #[test]
+    fn test_project_node() {
+        let table = sample_table();
+        let scan = PlanNode::Scan(ScanNode { table: &table });
+        let project = ProjectNode {
+            input: Box::new(scan),
+            columns: vec!["sales".to_string()],
+        };
+        let output = project.execute();
+
+        assert_eq!(output.len(), 1);
+        assert_eq!(output["sales"], vec!["100", "200", "300"]);
+    }
+
+    #[test]
+    fn test_filter_node() {
+        let table = sample_table();
+        let scan = PlanNode::Scan(ScanNode { table: &table });
+        let filter = FilterNode {
+            input: Box::new(scan),
+            predicate: Box::new(|row| row["region"] == "East"),
+        };
+        let output = filter.execute();
+
+        assert_eq!(output["region"], vec!["East", "East"]);
+        assert_eq!(output["sales"], vec!["100", "300"]);
+    }
+}
