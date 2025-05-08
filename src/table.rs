@@ -4,7 +4,6 @@ use std::error::Error;
 use csv;
 
 pub struct Column<T> {
-  pub name: String,
   pub data: Vec<T>,
 }
 
@@ -21,7 +20,6 @@ impl Table {
 
     for header in headers.iter() {
       columns.insert(header.to_string(), Column {
-        name: header.to_string(),
         data: Vec::new(),
       });
     }
