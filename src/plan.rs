@@ -95,6 +95,7 @@ impl<'a> Executable for FilterNode<'a> {
 pub enum AggregateFunction {
   Count,
   Sum,
+  Avg,
 }
 
 // Plan Node: Aggregate (group by + aggregation)
@@ -109,7 +110,7 @@ impl<'a> Executable for AggregateNode<'a> {
       let input_chunk = self.input.execute();
       let num_rows = input_chunk.values().next().map_or(0, |v| v.len());
 
-      let mut groups: HashMap<Vec<String>, HashMap<String, f64>> = HashMap::new();
+      let mut groups: HashMap<Vec<String>, HashMap<String, (f64, usize)>> = HashMap::new();
 
       for i in 0..num_rows {
           let group_key: Vec<String> = self
@@ -123,10 +124,13 @@ impl<'a> Executable for AggregateNode<'a> {
               for (col, func) in &self.aggregates {
                   match func {
                       AggregateFunction::Count => {
-                          init.insert(col.clone(), 0.0);
+                          init.insert(col.clone(), (0.0, 0));
                       }
                       AggregateFunction::Sum => {
-                          init.insert(col.clone(), 0.0);
+                          init.insert(col.clone(), (0.0, 0));
+                      }
+                      AggregateFunction::Avg => {
+                          init.insert(col.clone(), (0.0, 0));
                       }
                   }
               }
@@ -137,11 +141,20 @@ impl<'a> Executable for AggregateNode<'a> {
               let val = &input_chunk[col][i];
               match func {
                   AggregateFunction::Count => {
-                      *entry.get_mut(col).unwrap() += 1.0;
+                      let counter = entry.get_mut(col).unwrap();
+                      counter.0 += 1.0;
                   }
                   AggregateFunction::Sum => {
                       if let Ok(v) = val.parse::<f64>() {
-                          *entry.get_mut(col).unwrap() += v;
+                          let counter = entry.get_mut(col).unwrap();
+                          counter.0 += v;
+                      }
+                  }
+                  AggregateFunction::Avg => {
+                      if let Ok(v) = val.parse::<f64>() {
+                          let counter = entry.get_mut(col).unwrap();
+                          counter.0 += v;
+                          counter.1 += 1;
                       }
                   }
               }
@@ -161,15 +174,19 @@ impl<'a> Executable for AggregateNode<'a> {
           for (i, col) in self.group_by.iter().enumerate() {
               result.get_mut(col).unwrap().push(key[i].clone());
           }
-          for (col, val) in agg_vals {
-              result.get_mut(&col).unwrap().push(val.to_string());
+          for (col, (sum, count)) in agg_vals {
+              let value = if let Some((_, AggregateFunction::Avg)) = self.aggregates.iter().find(|(c, func)| c == &col && matches!(func, AggregateFunction::Avg)) {
+                  if count == 0 { "NaN".to_string() } else { (sum / count as f64).to_string() }
+              } else {
+                  sum.to_string()
+              };
+              result.get_mut(&col).unwrap().push(value);
           }
       }
 
       result
   }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -265,5 +282,30 @@ mod tests {
 
         assert_eq!(output["sales"][east_index], "2");
         assert_eq!(output["sales"][west_index], "1");
+    }
+
+    #[test]
+    fn test_aggregate_node_avg() {
+        let table = sample_table();
+        let scan = PlanNode::Scan(ScanNode { table: &table });
+        let aggregate = AggregateNode {
+            input: Box::new(scan),
+            group_by: vec!["region".to_string()],
+            aggregates: vec![("sales".to_string(), AggregateFunction::Avg)],
+        };
+        let output = aggregate.execute();
+
+        assert_eq!(output["region"].len(), 2);
+        assert!(output["region"].contains(&"East".to_string()));
+        assert!(output["region"].contains(&"West".to_string()));
+
+        let east_index = output["region"].iter().position(|r| r == "East").unwrap();
+        let west_index = output["region"].iter().position(|r| r == "West").unwrap();
+
+        let east_avg: f64 = output["sales"][east_index].parse().unwrap();
+        let west_avg: f64 = output["sales"][west_index].parse().unwrap();
+
+        assert!((east_avg - 200.0).abs() < 1e-6);
+        assert!((west_avg - 200.0).abs() < 1e-6);
     }
 }
