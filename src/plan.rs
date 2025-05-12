@@ -12,7 +12,7 @@ pub enum PlanNode<'a> {
     Scan(ScanNode<'a>),
     Project(ProjectNode<'a>),
     Filter(FilterNode<'a>),
-    // Aggregate, Join, etc. will go here later
+    Aggregate(AggregateNode<'a>),
 }
 
 impl<'a> Executable for PlanNode<'a> {
@@ -21,6 +21,7 @@ impl<'a> Executable for PlanNode<'a> {
             PlanNode::Scan(scan) => scan.execute(),
             PlanNode::Project(proj) => proj.execute(),
             PlanNode::Filter(filt) => filt.execute(),
+            PlanNode::Aggregate(agg) => agg.execute(),
         }
     }
 }
@@ -90,6 +91,86 @@ impl<'a> Executable for FilterNode<'a> {
     }
 }
 
+// Aggregate Function Enum
+pub enum AggregateFunction {
+  Count,
+  Sum,
+}
+
+// Plan Node: Aggregate (group by + aggregation)
+pub struct AggregateNode<'a> {
+  pub input: Box<PlanNode<'a>>,
+  pub group_by: Vec<String>,
+  pub aggregates: Vec<(String, AggregateFunction)>,
+}
+
+impl<'a> Executable for AggregateNode<'a> {
+  fn execute(&self) -> DataChunk {
+      let input_chunk = self.input.execute();
+      let num_rows = input_chunk.values().next().map_or(0, |v| v.len());
+
+      let mut groups: HashMap<Vec<String>, HashMap<String, f64>> = HashMap::new();
+
+      for i in 0..num_rows {
+          let group_key: Vec<String> = self
+              .group_by
+              .iter()
+              .map(|col| input_chunk[col][i].clone())
+              .collect();
+
+          let entry = groups.entry(group_key).or_insert_with(|| {
+              let mut init = HashMap::new();
+              for (col, func) in &self.aggregates {
+                  match func {
+                      AggregateFunction::Count => {
+                          init.insert(col.clone(), 0.0);
+                      }
+                      AggregateFunction::Sum => {
+                          init.insert(col.clone(), 0.0);
+                      }
+                  }
+              }
+              init
+          });
+
+          for (col, func) in &self.aggregates {
+              let val = &input_chunk[col][i];
+              match func {
+                  AggregateFunction::Count => {
+                      *entry.get_mut(col).unwrap() += 1.0;
+                  }
+                  AggregateFunction::Sum => {
+                      if let Ok(v) = val.parse::<f64>() {
+                          *entry.get_mut(col).unwrap() += v;
+                      }
+                  }
+              }
+          }
+      }
+
+      let mut result: DataChunk = HashMap::new();
+
+      for col in &self.group_by {
+          result.insert(col.clone(), Vec::new());
+      }
+      for (col, _) in &self.aggregates {
+          result.insert(col.clone(), Vec::new());
+      }
+
+      for (key, agg_vals) in groups {
+          for (i, col) in self.group_by.iter().enumerate() {
+              result.get_mut(col).unwrap().push(key[i].clone());
+          }
+          for (col, val) in agg_vals {
+              result.get_mut(&col).unwrap().push(val.to_string());
+          }
+      }
+
+      result
+  }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +221,49 @@ mod tests {
 
         assert_eq!(output["region"], vec!["East", "East"]);
         assert_eq!(output["sales"], vec!["100", "300"]);
+    }
+
+    #[test]
+    fn test_aggregate_node_sum() {
+        let table = sample_table();
+        let scan = PlanNode::Scan(ScanNode { table: &table });
+        let aggregate = AggregateNode {
+            input: Box::new(scan),
+            group_by: vec!["region".to_string()],
+            aggregates: vec![("sales".to_string(), AggregateFunction::Sum)],
+        };
+        let output = aggregate.execute();
+
+        assert_eq!(output["region"].len(), 2);
+        assert!(output["region"].contains(&"East".to_string()));
+        assert!(output["region"].contains(&"West".to_string()));
+
+        let east_index = output["region"].iter().position(|r| r == "East").unwrap();
+        let west_index = output["region"].iter().position(|r| r == "West").unwrap();
+
+        assert_eq!(output["sales"][east_index], "400");
+        assert_eq!(output["sales"][west_index], "200");
+    }
+
+    #[test]
+    fn test_aggregate_node_count() {
+        let table = sample_table();
+        let scan = PlanNode::Scan(ScanNode { table: &table });
+        let aggregate = AggregateNode {
+            input: Box::new(scan),
+            group_by: vec!["region".to_string()],
+            aggregates: vec![("sales".to_string(), AggregateFunction::Count)],
+        };
+        let output = aggregate.execute();
+
+        assert_eq!(output["region"].len(), 2);
+        assert!(output["region"].contains(&"East".to_string()));
+        assert!(output["region"].contains(&"West".to_string()));
+
+        let east_index = output["region"].iter().position(|r| r == "East").unwrap();
+        let west_index = output["region"].iter().position(|r| r == "West").unwrap();
+
+        assert_eq!(output["sales"][east_index], "2");
+        assert_eq!(output["sales"][west_index], "1");
     }
 }
